@@ -39,7 +39,12 @@ from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
 import model_resolve  # noqa: E402  — Grok Bot model footer resolution
 
-FEISHU = os.environ.get("FEISHU_BIN", "lark-cli")
+def _resolve_feishu_bin(env=None):
+    env = os.environ if env is None else env
+    return env.get("FEISHU_CLI") or env.get("FEISHU_BIN") or "lark-cli"
+
+
+FEISHU = _resolve_feishu_bin()
 DIR = os.path.dirname(os.path.abspath(__file__))
 TASKS_DIR = os.path.join(DIR, "tasks")
 CARDS_DIR = os.path.join(os.path.dirname(DIR), "cards")

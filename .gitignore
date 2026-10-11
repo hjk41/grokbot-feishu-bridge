@@ -29,3 +29,6 @@ build/
 .idea/
 .vscode/
 .DS_Store
+runtime/
+worker-runs/
+nas-inbound/relay.env

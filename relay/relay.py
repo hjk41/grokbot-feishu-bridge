@@ -8,12 +8,37 @@ On each new im.message (after dedup), BEFORE webhook POST:
 """
 import atexit, json, os, re, signal, subprocess, sys, threading, time, urllib.request, collections
 
-FEISHU = os.environ.get("FEISHU_BIN", "lark-cli")
+VALID_RELAY_ROLES = ("full", "inbound", "cloud-worker")
+DEFAULT_FEISHU_CLI = DEFAULT_LARK_CLI = "lark-cli"
+
+
+def resolve_feishu_cli(env=None):
+    env = os.environ if env is None else env
+    return (env.get("FEISHU_CLI") or env.get("FEISHU_BIN") or DEFAULT_FEISHU_CLI).strip()
+
+
+def resolve_lark_cli(env=None):
+    env = os.environ if env is None else env
+    return (env.get("LARK_CLI") or DEFAULT_LARK_CLI).strip()
+
+
+def parse_relay_role(raw=None, env=None):
+    env = os.environ if env is None else env
+    role = (env.get("RELAY_ROLE", "full") if raw is None else raw) or "full"
+    role = role.strip().lower()
+    if role not in VALID_RELAY_ROLES:
+        raise ValueError("Invalid RELAY_ROLE; expected full, inbound or cloud-worker")
+    return role
+
+
+RELAY_ROLE = parse_relay_role()
+FEISHU = resolve_feishu_cli()
 DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, DIR)
 import progress  # noqa: E402
 import chat_queue  # noqa: E402
 import settings  # noqa: E402
+import callback_server  # noqa: E402
 
 EVLOG = os.path.join(DIR, "events.log")
 PENDING_DIR = os.path.join(DIR, "pending")
@@ -328,6 +353,7 @@ def on_message(e):
             % (chat_type, e.get("sender_id"), text, task_id, pmid)
         )
         # Bypass claim path: write pending + webhook directly (still at-most-once via flags)
+        callback_server.attach_to_summary(task_id, s)
         chat_queue.write_executable_pending(s)
         ok, err = chat_queue.post_webhook(s)
         if ok:
@@ -496,6 +522,8 @@ def on_card(e):
     s["executable"] = True
     s["context"] = f"Feishu card action by {s['operator_id']}: {s['action_value']}"
     # Card actions bypass FIFO — immediate pending + webhook
+    if s.get("task_id"):
+        callback_server.attach_to_summary(s["task_id"], s)
     chat_queue.write_executable_pending(s)
     ok, err = chat_queue.post_webhook(s)
     log("card_action deliver", "ok", ok, "stop", stop_accepted, "err", err)
@@ -743,7 +771,17 @@ if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "ingest-histo
     raise SystemExit(0 if result.get("ok") else 1)
 
 
+def role_starts_message_consumer(role=None):
+    return (RELAY_ROLE if role is None else role) in ("full", "inbound")
+
+
+role_starts_card_consumer = role_starts_bus_refresh = role_starts_message_consumer
+
+
 if __name__ == "__main__":
+    if RELAY_ROLE == "cloud-worker":
+        print("cloud-worker: invoke worker_progress.py from the routine; no resident listeners or local queue")
+        raise SystemExit(0)
     settings.validate_startup()
     settings.acquire_instance(DIR)
     atexit.register(stop_children)
@@ -754,6 +792,11 @@ if __name__ == "__main__":
     os.makedirs(progress.TASKS_DIR, exist_ok=True)
     os.makedirs(chat_queue.QUEUES_DIR, exist_ok=True)
     os.makedirs(chat_queue.ADVANCE_DIR, exist_ok=True)
+    if RELAY_ROLE == "inbound":
+        # Validate before dispatching restored tasks and accepting worker callbacks.
+        callback_server.attach_callback({"task_id": "startup"}, {})
+        server = callback_server.start_server(port=int(os.environ.get("BRIDGE_PORT", "8765")))
+        atexit.register(server.shutdown)
     log("relay start; webhook configured:", bool(os.environ.get("FEISHU_RELAY_WEBHOOK_URL") and os.environ.get("FEISHU_RELAY_WEBHOOK_KEY")))
     log("progress helpers ready; tasks dir:", progress.TASKS_DIR)
     try:

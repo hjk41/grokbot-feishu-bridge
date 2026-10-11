@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Install for the current logged-in macOS user. Configuration stays in .env.
+set -euo pipefail
+project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+label=com.grokbot.feishu-bridge
+plist="$HOME/Library/LaunchAgents/$label.plist"
+mkdir -p "$HOME/Library/LaunchAgents" "$project_dir/runtime"
+chmod 700 "$project_dir/runtime"
+chmod +x "$project_dir/scripts/"*.sh
+"${PYTHON_BIN:-python3}" - "$project_dir" "$plist" "$label" <<'PY'
+import os, plistlib, sys
+root, path, label = sys.argv[1:]
+data = {'Label': label,
+        'ProgramArguments': ['/usr/bin/caffeinate', '-s', '/bin/bash', root + '/scripts/run.sh'],
+        'WorkingDirectory': root, 'RunAtLoad': True, 'KeepAlive': True,
+        'ThrottleInterval': 10,
+        'EnvironmentVariables': {'PATH': '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'},
+        'StandardOutPath': root + '/runtime/relay.log',
+        'StandardErrorPath': root + '/runtime/relay-error.log'}
+with open(path, 'wb') as out:
+    plistlib.dump(data, out)
+os.chmod(path, 0o600)
+PY
+launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$plist"
+launchctl kickstart "gui/$(id -u)/$label"
+echo "Installed $label; logs are in runtime/."

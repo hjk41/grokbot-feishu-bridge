@@ -1,6 +1,6 @@
 # 架构与协议
 
-## 当前实现：同一工作区
+## 入口与队列
 
 `relay.py` 消费 lark-cli 输出的**扁平 NDJSON**，不是直接处理飞书原始 webhook envelope。修改 CLI 版本时先检查 `event schema`；不要把原始飞书 HTTP payload 直接传给 `on_message`。
 
@@ -67,7 +67,7 @@ stateDiagram-v2
 
 运行目录必须持久保存且不公开。源代码可以重新拉取，任务目录不可当作临时 build 输出清理。去重缓存保留最近 5000 项；它不是永远完整的消息数据库。
 
-## 全天候入口：尚未实现的扩展
+## 独立入口与云端回调
 
 云电脑上的 relay 不能在云电脑暂停时唤醒自身。需要独立的常开 ingress：
 
@@ -76,4 +76,20 @@ stateDiagram-v2
 3. Grok 通过 HTTPS、任务绑定的认证回调上报阶段和终态；ingress 持有任务状态和卡片操作权限。
 4. ingress 验证回调身份、task_id、状态迁移和防重放，结束后推进 FIFO。
 
-这里列的是协议演进方向，不是当前可启动的第二种模式。现有 `progress.py` 操作本地文件，无法在另一台机器读取 ingress 的任务状态。也不应通过公网共享整个状态目录或把飞书凭据放到 webhook payload。
+`RELAY_ROLE=inbound` 启动 loopback HTTP 服务器（默认 8765），由 HTTPS 代理公开。
+`full` 保留原共享状态行为；`cloud-worker` 不启动监听、扫描或心跳，直接退出。
+云端 routine 只调用 `worker_progress.py`，不读取入口文件或直接操作飞书。
+
+投递队首前持久保存随机任务令牌和 24 小时有效期，将 `callback.url` 与
+`callback.token` 加入私有 webhook envelope。令牌只允许访问该 task，不能跨任务。
+GET `/v1/tasks/<task_id>` 返回有限状态字段；POST 接受 `start/update/done/fail`。
+全局凭据不随 payload 传输，服务器不记录请求路径、正文或认证 header。
+
+云端每个 run 使用不同的 mode-600 payload 文件。第一次 start 前保存随机 worker_id，
+入口持久抢占此 task；另一个 worker_id 的写入返回 409。相同 worker 的终态重试
+不重复发卡，晚到 update 被拒绝。客户端拒绝 HTTP 和重定向；测试中只显式允许 loopback HTTP。
+只有入口更新卡片和终态推进通知；现有 relay 扫描器完成下一任务派发。
+
+公开 `/health` 仅表示回调服务器存活。凭据、任务状态、pending 和 worker-runs
+不能被静态文件服务器公开；不要通过公网共享状态目录。抢占不能保证崩溃后的
+副作用 exactly-once，终态发送期间崩溃也可能留下缺失的结果卡，需人工核对。

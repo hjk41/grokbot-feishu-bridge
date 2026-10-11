@@ -445,6 +445,8 @@ def claim_dispatch(chat_id: str, task_id: str, *, summary: Optional[dict] = None
             st["queued_count"] = 0
             st["current_action"] = "投递中"
             st["detail"] = "正在投递到执行队列…"
+            import callback_server
+            callback_server.attach_callback(st, summary)
             prog.save_task(st)
             log("dispatch claimed", task_id, "claim", st["dispatch_claim_id"])
             return "claimed", summary

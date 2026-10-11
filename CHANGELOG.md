@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0 (unreleased)
+
+- Merge the Grok Bot standalone inbound/cloud-worker roles and independent deployment structure.
+- Add task-scoped authenticated HTTPS callbacks, persistent worker claims and idempotent terminal retries.
+- Keep state, card updates, heartbeats and FIFO on the inbound host; cloud helper needs no Feishu credentials.
+- Add macOS launchd installation, Linux user-service generation and dedicated CLI profile support.
+- Reject invalid roles; cloud-worker launches no local queue or event listeners.
+- Add transport/authentication/FIFO and role regression coverage.
+
+Still experimental: host availability, callback reachability and routine behavior require real acceptance tests;
+hard cancellation and exactly-once execution are not provided.
+
 ## 0.1.0
 
 Initial experimental open-source extraction:

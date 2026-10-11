@@ -11,4 +11,7 @@ set -a
 source "$project_dir/.env"
 set +a
 cd "$project_dir/relay"
-exec python3 -u relay.py "$@"
+if [[ -n "${FEISHU_PROFILE:-}" ]]; then
+  export FEISHU_CLI="$project_dir/scripts/lark-profile.sh"
+fi
+exec "${PYTHON_BIN:-python3}" -u relay.py "$@"

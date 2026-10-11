@@ -4,9 +4,9 @@
 
 用飞书私聊或群内 `@机器人` 给 **Grok Bot（Cursor 的云电脑代理）** 下达任务，并在飞书查看排队、执行阶段和结果。通过 Grok Bot 官方的 **Webhook routine** 唤起任务；通过官方 **lark-cli** 接收消息、回复和更新卡片。无需提取桌面登录 token，也不是调用 xAI 模型 API。
 
-**状态：可复用的实验性参考实现，MIT 开源。** 当前支持同一 Linux 工作区部署：relay 与 Grok 执行辅助命令共享本地状态。云电脑空闲会暂停，暂停期间 relay 也无法接收飞书事件；本项目不提供可靠的全天候收消息保证。常开主机与云端之间的远程进度回调尚未实现，不能只把 relay 搬到另一台机器就完成迁移。
+**状态：可复用的实验性参考实现，MIT 开源。** 支持同一工作区 `full` 模式，以及 Linux/macOS 独立入口 `inbound` + 云端 `cloud-worker` 模式。独立入口持有队列、卡片和心跳，云端通过带任务认证的 HTTPS 回调更新阶段与终态。入口主机必须持续在线；云端暂停仍可能延迟执行。
 
-English: An experimental Feishu/Lark chat bridge for Cursor Grok Bot using webhook routines, durable per-chat queues, and reply-linked progress cards. Linux/Python standard library. The relay and worker currently require a shared filesystem; cloud idle suspension interrupts ingress. See [architecture](docs/architecture.md) and [security](SECURITY.md).
+English: An experimental Feishu/Lark chat bridge for Cursor Grok Bot using webhook routines, durable per-chat queues, and reply-linked progress cards. Linux/macOS, Python standard library. Supports shared-workspace mode and independent ingress with authenticated cloud callbacks. See [architecture](docs/architecture.md) and [security](SECURITY.md).
 
 ## 工作流程
 
@@ -35,13 +35,14 @@ flowchart LR
 - 卡片不显示模型名。内部兼容字段不代表已取得实际路由信息。
 - 同一 CLI 总线上的两个消费者按顺序启动，保持 stdin 打开并等待 ready 标记；唤醒后可刷新连接。
 - 同一状态目录仅允许一个 relay/补收进程；正常退出时关闭自己的事件消费者。
+- 独立入口通过任务绑定的短期令牌接收 HTTPS 回调；云端执行者须先抢占，重复 webhook run 无法抢占已执行任务。
 - 用户与聊天两层白名单，未配置时拒收；群消息必须明确提及配置的机器人 open_id。
 
 ## 部署
 
 ### 1. 准备运行环境
 
-在 **Grok Bot 的 Linux 云电脑工作区** 中部署；需要 Python 3.10+、Bash、Node.js/npm 和 lark-cli。Python 代码仅使用标准库，使用 POSIX `fcntl` 文件锁，不支持原生 Windows。开发机可用 Linux 或 WSL。
+推荐在 **常开 Linux/macOS 主机** 部署独立入口，参见 [独立部署说明](nas-inbound/README.md) 与 [切流步骤](nas-inbound/CUTOVER.md)。需要 Python 3.10+、Bash、Node.js/npm 和 lark-cli。Python 代码仅使用标准库，使用 POSIX `fcntl` 文件锁，不支持原生 Windows。也可在 Grok Bot Linux 工作区用 `full` 模式共享状态。
 
 ```bash
 git clone https://github.com/hjk41/grokbot-feishu-bridge.git
@@ -66,7 +67,7 @@ lark-cli config init
 
 ### 2. 创建 Grok Webhook routine
 
-让 Grok Bot 创建一个 Webhook 触发的 routine。将 [routine 指令模板](prompts/feishu-routine.md) 中的 `PROJECT_DIR` 替换为本机实际路径，并保存为 routine 指令。
+让 Grok Bot 创建一个 Webhook 触发的 routine。独立入口使用 [cloud-worker 指令模板](prompts/standalone-routine.md)，云端只需 `relay/worker_progress.py`。同一工作区则使用 [full 模式模板](prompts/feishu-routine.md)，将其中的 `PROJECT_DIR` 替换为实际路径。
 
 在桌面客户端打开 routine，复制 **POST to** URL 与 **key**。官方协议为 HTTP POST JSON，带 `Authorization: Bearer <key>`。HTTP 200 只表示接受并启动，完成情况需看 routine 历史与任务终态。参见 [官方 routine 文档](https://cursor.com/help/grok-bot/routines)。
 
@@ -90,6 +91,10 @@ chmod 600 .env
 | `FEISHU_RELAY_WEBHOOK_KEY` | routine 密钥 |
 | `FEISHU_BOT_OPEN_ID` | 群内 @消息识别需要；填机器人 open_id，不能填 app_id |
 | `FEISHU_BIN` | CLI 可执行文件名或完整路径，默认 `lark-cli` |
+| `RELAY_ROLE` | 独立入口用 `inbound`；共享状态用 `full`；无效值拒绝启动 |
+| `BRIDGE_PUBLIC_URL` | `inbound` 必填：反向代理到 loopback 回调服务器的 HTTPS 基址 |
+| `FEISHU_PROFILE` / `LARK_CLI` | 专用 CLI profile / 实际 CLI 路径，避免改变其他应用配置 |
+| `PYTHON_BIN` | Python 路径；macOS 请使用已安装的 Python 3.10+ |
 
 获取自己环境的 ID，可在控制台/通讯录查看，或在受保护的终端进行一次有界监听：
 
@@ -117,7 +122,9 @@ bash scripts/run.sh
 
 ## Grok 如何更新卡片
 
-routine 根据 payload 中的 `task_id` 调用同一项目下的命令：
+独立入口的 routine 使用收到的完整 payload 调用 `worker_progress.py`，例如 `python3 relay/worker_progress.py update --payload worker-runs/UNIQUE_RUN/payload.json --action '整理结果'`。每个 run 使用独立受保护文件，先 `start` 抢占成功，再执行请求，最后 `done` 或 `fail`；详见 [模板](prompts/standalone-routine.md)。
+
+同一工作区 `full` 模式根据 payload 中的 `task_id` 调用以下命令：
 
 ```bash
 bash scripts/progress.sh start --task-id TASK_ID --action '检查环境'
@@ -137,12 +144,12 @@ python3 -m unittest discover -s relay/tests -v
 python3 scripts/audit_public_tree.py
 ```
 
-测试覆盖原消息关联、FIFO、两个进程争抢、终态冻结、阶段更新、停止权限、白名单与拒收、归档边界，以及模型页脚隐藏。全程不需要真实账号或密钥。公开树审计可检查工作树或 Git 中全部已跟踪历史：`--git-history`。审计是辅助检查，不能证明不存在任何形式的私人信息。
+测试覆盖原消息关联、FIFO、两个进程争抢、终态冻结、阶段更新、停止权限、白名单、归档、模型页脚隐藏，以及真实 loopback HTTP 的认证、执行抢占和终态重试。全程不需要真实账号或密钥。公开树审计可检查工作树或 Git 中全部已跟踪历史：`--git-history`。审计是辅助检查，不能证明不存在任何形式的私人信息。
 
 ## 已知边界
 
-- **云端暂停会停止接收事件。** 唤醒检测只在进程恢复后工作，不能保证暂停期间的消息被服务器重放。见 [Cursor 官方支持关于后台脚本和空闲暂停的说明](https://forum.cursor.com/t/grok-bot-computer-freezes-reboots-repeatedly-and-kills-24-7-background-scripts/174272)。
-- **跨主机部署未实现。** 全天候架构需要常开入口持久收件、触发云端 webhook，并提供带认证的远程阶段/终态回调。当前 helper、pending 和锁都在同一文件系统，详见 [架构说明](docs/architecture.md)。
+- **入口离线会停止收件。** `full` 模式随云电脑暂停；`inbound` 模式依赖入口主机在线和公网回调可达。macOS 登录代理在注销、关机或合盖休眠时会中断，不能据此保证全天候服务。见 [运行说明](nas-inbound/CUTOVER.md) 和 [Cursor 官方空闲暂停说明](https://forum.cursor.com/t/grok-bot-computer-freezes-reboots-repeatedly-and-kills-24-7-background-scripts/174272)。
+- **独立部署需要双向 HTTPS。** 入口访问 Grok webhook，云端访问入口回调；未配置回调或 routine 仍用旧 helper 时无法完成终态推进。见 [架构说明](docs/architecture.md)。
 - **不是 exactly-once。** 持久抢占避免并发重复派发，但超时重试可能重复 HTTP 请求，进程在抢占后退出也可能留下未投递任务。不要自动重复有副作用操作。
 - 队列等待不计启动超时；已接受但未启动默认 10 分钟超时，阶段长期不更新默认 30 分钟超时。超时卡不代表底层执行已停止，下一任务可能与旧执行重叠。
 - 初版只接受文本指令；图片、附件、语音和审批确认流程没有实现。`/new`、`/history` 未提供专门状态管理。

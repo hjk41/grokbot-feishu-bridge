@@ -30,6 +30,16 @@ if [[ "${1:-}" == --prepare-only ]]; then
   exit 0
 fi
 launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$plist"
+# launchd may still be removing the old registration after bootout returns.
+for attempt in 1 2 3 4 5; do
+  if bootstrap_error="$(launchctl bootstrap "gui/$(id -u)" "$plist" 2>&1)"; then
+    break
+  fi
+  if [[ "$attempt" == 5 ]]; then
+    printf '%s\n' "$bootstrap_error" >&2
+    exit 1
+  fi
+  sleep 2
+done
 launchctl kickstart "gui/$(id -u)/$label"
 echo "Installed $label; logs are in runtime/."

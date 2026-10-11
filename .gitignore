@@ -9,6 +9,8 @@ secrets/
 # Runtime state and generated cards contain private conversations.
 relay/tasks/
 relay/queues/
+relay/conversations/
+relay/approvals/
 relay/pending/
 relay/processed/
 relay/seen_ids.txt

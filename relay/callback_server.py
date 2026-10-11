@@ -4,6 +4,7 @@ import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+from pathlib import Path
 import re
 import secrets
 import threading
@@ -75,7 +76,7 @@ class CallbackHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def task(self):
-        match = re.fullmatch(r'/v1/tasks/([A-Za-z0-9_-]{1,64})', self.path)
+        match = re.fullmatch(r'/v1/tasks/([A-Za-z0-9_-]{1,64})(?:/payload)?', self.path)
         if not match:
             return None
         return match.group(1)
@@ -95,11 +96,34 @@ class CallbackHandler(BaseHTTPRequestHandler):
         if not state or not self.authorized(state):
             self.reply(401, {'ok': False, 'error': 'unauthorized'})
             return
+        if self.path.endswith('/payload'):
+            import chat_queue
+            try:
+                path = Path(state.get('pending_path') or '')
+                if (path.is_symlink() or path.parent.resolve() != Path(chat_queue.PENDING_DIR).resolve()
+                        or path.stat().st_size > 8 * 1024 * 1024):
+                    raise ValueError()
+                payload = json.loads(path.read_text())
+                if not isinstance(payload, dict):
+                    raise ValueError()
+                callback = payload.get('callback') or {}
+                if not isinstance(callback, dict):
+                    raise ValueError()
+                if (payload.get('task_id') != tid or payload.get('kind') != 'message'
+                        or payload.get('executable') is not True
+                        or not hmac.compare_digest(str(callback.get('token') or ''), state['callback_token'])):
+                    raise ValueError()
+                digest, _ = chat_queue.payload_digest(payload)
+            except (OSError, ValueError, TypeError, KeyError):
+                self.reply(409, {'ok': False, 'error': 'payload_unavailable'})
+                return
+            self.reply(200, {'ok': True, 'payload': payload, 'sha256': digest})
+            return
         self.reply(200, {'ok': True, 'task': visible(state)})
 
     def do_POST(self):
         tid = self.task()
-        if not tid:
+        if not tid or self.path.endswith('/payload'):
             self.reply(404, {'ok': False, 'error': 'unknown_endpoint'})
             return
         try:

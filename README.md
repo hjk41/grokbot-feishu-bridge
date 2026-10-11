@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/hjk41/grokbot-feishu-bridge/actions/workflows/test.yml/badge.svg)](https://github.com/hjk41/grokbot-feishu-bridge/actions/workflows/test.yml)
 
-用飞书私聊或群内 `@机器人` 给 **Grok Bot（Cursor 的云电脑代理）** 下达任务，并在飞书查看排队、执行阶段和结果。通过 Grok Bot 官方的 **Webhook routine** 唤起任务；通过官方 **lark-cli** 接收消息、回复和更新卡片。无需提取桌面登录 token，也不是调用 xAI 模型 API。
+用飞书私聊或群内 `@机器人` 给 **Grok Bot（Cursor 的云电脑代理）** 下达任务，并在飞书查看排队、执行阶段和结果。默认通过 Grok Bot 官方的 **Webhook routine** 唤起任务；通过官方 **lark-cli** 接收消息、回复和更新卡片。可选的 Mac 原生审批和聊天隔离功能读取本人已登录客户端的认证文件，详见[运行说明](docs/operations.md)。
 
 **状态：可复用的实验性参考实现，MIT 开源。** 支持同一工作区 `full` 模式，以及 Linux/macOS 独立入口 `inbound` + 云端 `cloud-worker` 模式。独立入口持有队列、卡片和心跳，云端通过带任务认证的 HTTPS 回调更新阶段与终态。入口主机必须持续在线；云端暂停仍可能延迟执行。
 
@@ -37,6 +37,9 @@ flowchart LR
 - 同一状态目录仅允许一个 relay/补收进程；正常退出时关闭自己的事件消费者。
 - 独立入口通过任务绑定的短期令牌接收 HTTPS 回调；云端执行者须先抢占，重复 webhook run 无法抢占已执行任务。
 - 用户与聊天两层白名单，未配置时拒收；群消息必须明确提及配置的机器人 open_id。
+- 保留同一聊天中明确引用的单条消息，按需通过 CLI 读取历史；入口不自动附加两次 @ 之间的聊天。
+- 可选按聊天绑定独立原生 Grok Bot 对话，飞书仍使用同一个机器人；无共用入口自动降级。
+- 可选 Mac 原生审批转发，支持本人单次允许/拒绝及 App 审批后的卡片同步。
 
 ## 部署
 

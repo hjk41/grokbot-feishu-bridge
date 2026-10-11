@@ -62,13 +62,23 @@ def card_allowed(event):
             value = json.loads(value)
         except ValueError:
             return False
-    return (isinstance(value, dict) and bool(value.get("task_id")) and
-            value.get("action") in ("stop", "request_stop"))
+    if not isinstance(value, dict):
+        return False
+    if value.get("action") in ("approval_allow_once", "approval_deny"):
+        import re
+        return (bool(re.fullmatch(r"[a-f0-9]{32}", str(value.get("approval_id", "")))) and
+                bool(re.fullmatch(r"[a-f0-9]{32}", str(value.get("nonce", "")))))
+    return bool(value.get("task_id")) and value.get("action") in ("stop", "request_stop")
 
 
 def validate_startup():
     if not _ids("FEISHU_ALLOWED_USERS") or not _ids("FEISHU_ALLOWED_CHATS"):
         raise SystemExit("Configure FEISHU_ALLOWED_USERS and FEISHU_ALLOWED_CHATS first")
+    import grok_sessions
+    try:
+        grok_sessions.validate()
+    except grok_sessions.NativeError as error:
+        raise SystemExit(str(error)) from None
     url = urlsplit(os.environ.get("FEISHU_RELAY_WEBHOOK_URL", "").strip())
     if url.scheme != "https" or not url.hostname or url.username or url.password or url.fragment:
         raise SystemExit("Configure an HTTPS routine webhook URL without embedded credentials")

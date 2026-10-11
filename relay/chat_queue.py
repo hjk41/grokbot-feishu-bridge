@@ -217,6 +217,8 @@ def _already_claimed_or_delivered(st: dict) -> bool:
 
 
 def write_executable_pending(summary: dict) -> str:
+    import grok_sessions
+    grok_sessions.bind(summary)
     os.makedirs(PENDING_DIR, exist_ok=True)
     name = summary.get("event_id") or summary.get("message_id") or summary.get("task_id") or (
         "ts-%d" % int(time.time() * 1000)
@@ -230,14 +232,65 @@ def write_executable_pending(summary: dict) -> str:
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
+    # Persist the input location before the cloud can fetch it after POST.
+    if os.environ.get("RELAY_ROLE", "full").lower() == "inbound" and summary.get("kind") == "message":
+        prog = _prog()
+        with prog.task_guard(summary["task_id"]):
+            state = prog.load_task(summary["task_id"])
+            if state:
+                state["pending_path"] = path
+                prog.save_task(state)
     log("executable pending written", os.path.basename(path))
     return path
+
+
+def payload_digest(summary):
+    body = json.dumps(summary, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(body).hexdigest(), len(body)
+
+
+def webhook_envelope(summary):
+    """Keep capabilities ahead of all text, and full context out of wake text."""
+    if os.environ.get("RELAY_ROLE", "full").lower() != "inbound" or summary.get("kind") != "message":
+        return summary
+    callback = summary.get("callback") or {}
+    if not callback.get("url") or not callback.get("token"):
+        raise ValueError("missing_callback")
+    digest, length = payload_digest(summary)
+    instruction = (
+        "This is a compact authenticated control envelope, not a raw Feishu event. "
+        "Before saving payload.json or executing the user's request, GET payload.url with "
+        "Authorization: Bearer callback.token and User-Agent: "
+        "grokbot-feishu-bridge/0.1 (+https://github.com/hjk41/grokbot-feishu-bridge); "
+        "refuse redirects. The response is {ok,payload,sha256}. "
+        "Require ok=true, matching task_id and callback, executable=true, and matching "
+        "payload.sha256 from this envelope (canonical UTF-8 JSON: ensure_ascii=false, "
+        "sort_keys=true, separators=(',',':')). Save the returned payload, not this wake, "
+        "mode 600 in the unique per-run directory. Then use the existing worker_progress.py "
+        "start/update/done/fail protocol. Full user text and all context are in the fetched "
+        "payload; execute only its current instruction. On failed fetch or mismatch stop, "
+        "do not invent or truncate input. Never display callback credentials."
+    )
+    return {"kind": "message", "task_id": summary["task_id"], "executable": True,
+            "callback": callback,
+            "payload": {"url": callback["url"] + "/payload", "sha256": digest, "bytes": length},
+            "progress_instruction": instruction,
+            "message_id": summary.get("message_id"), "chat_id": summary.get("chat_id"),
+            "sender_open_id": summary.get("sender_open_id"),
+            "text": "Complete user request is in authenticated payload.url; follow progress_instruction.",
+            "context": "Task control envelope: fetch complete payload before running this task."}
 
 
 def post_webhook(summary: dict) -> Tuple[bool, Optional[str]]:
     """POST webhook. Never logs secrets. Test hook may replace transport."""
     if _post_hook is not None:
         return _post_hook(summary)
+    import grok_sessions
+    if grok_sessions.enabled():
+        try:
+            return grok_sessions.post(summary, webhook_envelope(summary))
+        except (ValueError, KeyError):
+            return False, "任务控制包不完整"
     prog = _prog()
     url = os.environ.get("FEISHU_RELAY_WEBHOOK_URL", "").strip()
     key = os.environ.get("FEISHU_RELAY_WEBHOOK_KEY", "").strip()
@@ -245,7 +298,10 @@ def post_webhook(summary: dict) -> Tuple[bool, Optional[str]]:
         key = key[7:].strip()
     if not url or not key:
         return False, "任务投递未配置"
-    body = json.dumps(summary, ensure_ascii=False).encode()
+    try:
+        body = json.dumps(webhook_envelope(summary), ensure_ascii=False, separators=(",", ":")).encode()
+    except (ValueError, KeyError):
+        return False, "任务控制包不完整"
     last_err = None
     for attempt in range(4):
         try:
@@ -280,7 +336,7 @@ def build_summary_from_task(state: dict) -> dict:
     tid = state["task_id"]
     pmid = state.get("progress_message_id")
     text = state.get("request_text") or ""
-    return {
+    summary = {
         "kind": "message",
         "event_id": state.get("event_id"),
         "message_id": state.get("message_id"),
@@ -293,6 +349,8 @@ def build_summary_from_task(state: dict) -> dict:
         "sender_type": state.get("sender_type"),
         "msg_type": state.get("msg_type") or "text",
         "text": text,
+        "user_text": state.get("user_text", text),
+        "quoted_context": state.get("quoted_context"),
         "create_time": state.get("create_time"),
         "task_id": tid,
         "progress_message_id": pmid,
@@ -309,6 +367,11 @@ def build_summary_from_task(state: dict) -> dict:
             % (state.get("chat_type"), state.get("sender_open_id"), text, tid, pmid)
         ),
     }
+    # Preserve frozen pre-upgrade inputs when rebuilding an older task. New
+    # tasks have no automatic conversation_context field.
+    if "conversation_context" in state:
+        summary["conversation_context"] = state["conversation_context"]
+    return summary
 
 
 def mark_waiting(task_id: str, ahead: int) -> dict:
@@ -510,7 +573,13 @@ def dispatch_task(task_id: str, *, chat_id: Optional[str] = None,
         return result
 
     # Locks released — network I/O
-    pending_path = write_executable_pending(summary or {})
+    try:
+        pending_path = write_executable_pending(summary or {})
+    except Exception as error:
+        import grok_sessions
+        label = str(error) if isinstance(error, grok_sessions.NativeError) else "pending_write_failed"
+        _finalize_dispatch_fail(task_id, None, label)
+        return "failed"
     ok, err = post_webhook(summary or {})
     if ok:
         try:

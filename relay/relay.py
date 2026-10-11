@@ -39,6 +39,8 @@ import progress  # noqa: E402
 import chat_queue  # noqa: E402
 import settings  # noqa: E402
 import callback_server  # noqa: E402
+import quoted_context  # noqa: E402
+import grok_approvals  # noqa: E402
 
 EVLOG = os.path.join(DIR, "events.log")
 PENDING_DIR = os.path.join(DIR, "pending")
@@ -105,6 +107,8 @@ def strip_mentions(text, mentions):
         if m.get("id") == BOT_OPEN_ID or m.get("name") == BOT_NAME:
             for tok in (m.get("key"), "@" + (m.get("name") or "")):
                 if tok and tok != "@": text = text.replace(tok, "")
+    # mget's rendered text can omit the original mentions array.
+    text = re.sub(r"(?<!\S)@" + re.escape(BOT_NAME) + r"(?=$|\s)", "", text)
     return re.sub(r"[ \t]+", " ", text).strip()
 
 
@@ -289,15 +293,27 @@ def on_message(e):
 
     threading.Thread(target=react, args=(mid,), daemon=True).start()
 
-    text = strip_mentions(e.get("content") or "", e.get("mentions"))
+    user_text, text, quote, notice = quoted_context.prepare_request(e, FEISHU, strip_mentions)
+    if notice:
+        card = {
+            "schema": "2.0",
+            "header": {"title": {"tag": "plain_text", "content": "Grok · 请补充内容"}},
+            "body": {"elements": [{"tag": "markdown", "content": notice}]},
+        }
+        ok, _, _ = progress.reply_interactive(
+            mid, card, reply_in_thread=e.get("chat_type") == "topic" or bool(e.get("thread_id")),
+            idempotency_key="empty-" + progress.make_task_id(mid),
+        )
+        log("empty request notice", "sent", ok)
+        return
     chat_id = e.get("chat_id") or ""
     chat_type = e.get("chat_type") or "p2p"
     event_id = e.get("event_id")
     task_id = progress.make_task_id(mid)
-    bypass = chat_queue.is_bypass_text(text)
+    bypass = chat_queue.is_bypass_text(user_text)
 
     # Build association fields early for task state / summary
-    parent_id = e.get("reply_to")
+    parent_id = e.get("reply_to") or e.get("parent_id")
     summary_base = {
         "kind": "message",
         "event_id": event_id,
@@ -311,6 +327,8 @@ def on_message(e):
         "sender_type": e.get("sender_type"),
         "msg_type": e.get("message_type"),
         "text": text,
+        "user_text": user_text,
+        "quoted_context": quote,
         "create_time": e.get("create_time"),
         "task_id": task_id,
     }
@@ -323,6 +341,7 @@ def on_message(e):
                 message_id=mid, chat_id=chat_id, chat_type=chat_type,
                 request_text=text, task_id=task_id, event_id=event_id,
                 sender_open_id=e.get("sender_id"),
+                thread_id=e.get("thread_id"),
                 queued_count=0, bypass_fifo=True, initial_status="ack",
             )
         except Exception as ex:
@@ -334,6 +353,8 @@ def on_message(e):
             st2["bypass_fifo"] = True
             st2["executable"] = True
             st2["parent_id"] = parent_id
+            st2["user_text"] = user_text
+            st2["quoted_context"] = quote
             st2["thread_id"] = e.get("thread_id")
             st2["root_id"] = e.get("root_id")
             st2["sender_type"] = e.get("sender_type")
@@ -354,7 +375,11 @@ def on_message(e):
         )
         # Bypass claim path: write pending + webhook directly (still at-most-once via flags)
         callback_server.attach_to_summary(task_id, s)
-        chat_queue.write_executable_pending(s)
+        try:
+            chat_queue.write_executable_pending(s)
+        except Exception:
+            progress.mark_webhook_result(task_id, ok=False, error="任务输入或独立会话绑定失败")
+            return
         ok, err = chat_queue.post_webhook(s)
         if ok:
             try:
@@ -391,6 +416,7 @@ def on_message(e):
             message_id=mid, chat_id=chat_id, chat_type=chat_type,
             request_text=text, task_id=task_id, event_id=event_id,
             sender_open_id=e.get("sender_id"),
+            thread_id=e.get("thread_id"),
             queued_count=0, bypass_fifo=False, initial_status="ack",
         )
         pmid = st.get("progress_message_id")
@@ -419,6 +445,8 @@ def on_message(e):
     with progress.task_guard(task_id):
         st2 = progress.load_task(task_id) or {}
         st2["parent_id"] = parent_id
+        st2["user_text"] = user_text
+        st2["quoted_context"] = quote
         st2["thread_id"] = e.get("thread_id")
         st2["root_id"] = e.get("root_id")
         st2["sender_type"] = e.get("sender_type")
@@ -488,6 +516,12 @@ def on_card(e):
             action_value = json.loads(action_value)
         except ValueError:
             pass
+    if isinstance(action_value, dict) and action_value.get("action") in grok_approvals.ACTIONS:
+        # Native approvals are resolved by the ingress API client, never by
+        # spawning another routine run or passing a decision through a prompt.
+        accepted = grok_approvals.handle_card(e)
+        log("native approval decision", "accepted", accepted)
+        return
     stop_accepted = False
     is_stop = isinstance(action_value, dict) and action_value.get("action") in ("stop", "request_stop")
     if is_stop:
@@ -814,6 +848,10 @@ if __name__ == "__main__":
             log("resume_heartbeats error", progress.redact(str(ex2)))
     threading.Thread(target=refresh_bus_loop, daemon=True).start()
     threading.Thread(target=queue_scan_loop, daemon=True).start()
+    try:
+        grok_approvals.start(_shutdown)
+    except Exception:
+        log("native approvals startup unavailable; messaging remains active")
     # Secondary waits until primary brings the bus up — never two bus daemons.
     threading.Thread(
         target=consume, args=(CARD_EVENT_KEY, on_card),

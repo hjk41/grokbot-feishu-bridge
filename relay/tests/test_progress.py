@@ -288,7 +288,7 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(len(a), 16)
         self.assertNotEqual(a, c)
 
-    def test_create_ack_and_group_thread(self):
+    def test_create_ack_in_group_does_not_create_thread(self):
         st = progress.create_ack(
             message_id="om_orig_1", chat_id="oc_1", chat_type="group",
             request_text="hello", task_id="t001aabbccddeeff",
@@ -297,7 +297,7 @@ class ProgressTests(unittest.TestCase):
         self.assertTrue(st["card_create_ok"])
         self.assertEqual(st["progress_message_id"], "om_prog_0001")
         reply = [c for c in self.fake.calls if "+messages-reply" in c][0]
-        self.assertIn("--reply-in-thread", reply)
+        self.assertNotIn("--reply-in-thread", reply)
         progress.stop_heartbeat(st["task_id"])
 
     def test_duplicate_create_reuses_card(self):
@@ -386,15 +386,30 @@ class ProgressTests(unittest.TestCase):
         # detail should mention 已用时 / 上次更新
         self.assertTrue(any("已用时" in (p.get("data") or "") for p in self.fake.patch_log))
 
-    def test_group_followup_uses_thread_reply(self):
-        progress.create_ack(
-            message_id="om_group_orig", chat_id="oc_g", chat_type="group",
-            request_text="g", task_id="tgrp01aabbccddee",
-        )
-        progress.done("tgrp01aabbccddee", summary_md="总结", send_summary=True, final_action="完成")
-        # follow-up should be reply-in-thread, not bare send to chat
-        replies = [c for c in self.fake.calls if "+messages-reply" in c and "--reply-in-thread" in c]
-        self.assertGreaterEqual(len(replies), 2)  # ack + summary
+    def test_ack_and_terminal_cards_preserve_reply_location(self):
+        cases = [("group", None, False), ("group", "omt_existing", True),
+                 ("topic", None, True), ("p2p", None, False)]
+        for chat_type, thread_id, expected_thread in cases:
+            for terminal in ("done", "failed"):
+                with self.subTest(chat_type=chat_type, thread_id=thread_id, terminal=terminal):
+                    self.fake.calls.clear()
+                    tid = "reply_%s_%s_%s" % (chat_type, bool(thread_id), terminal)
+                    st = progress.create_ack(
+                        message_id="om_group_orig", chat_id="oc_g", chat_type=chat_type,
+                        thread_id=thread_id, request_text="g", task_id=tid,
+                    )
+                    progress.stop_heartbeat(tid)
+                    self.assertEqual(st.get("thread_id"), thread_id)
+                    if terminal == "done":
+                        progress.done(tid, summary_md="总结", send_summary=True)
+                    else:
+                        progress.fail(tid, error="失败", send_error_card=True)
+                    replies = [c for c in self.fake.calls if "+messages-reply" in c]
+                    self.assertEqual(len(replies), 2)
+                    for reply in replies:
+                        self.assertEqual("--reply-in-thread" in reply, expected_thread)
+                        self.assertEqual(reply[reply.index("--message-id") + 1], "om_group_orig")
+                    self.assertFalse(any("+messages-send" in c for c in self.fake.calls))
 
     def test_card_api_fail_still_returns_state(self):
         self.fake.fail_reply = True

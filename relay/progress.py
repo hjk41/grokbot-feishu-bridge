@@ -713,7 +713,8 @@ def deliver_followup(state: dict, card: dict) -> Tuple[bool, Optional[str], dict
         err = {"error": "missing original message_id; refuse bare send", "message_id": mid}
         log("deliver_followup refuse bare send", state.get("task_id"), redact(json.dumps(err)))
         return False, None, err
-    reply_in_thread = chat_type in ("group", "topic")
+    # Keep replies in an existing topic, without creating one for ordinary groups.
+    reply_in_thread = chat_type == "topic" or bool(state.get("thread_id"))
     ok, smid, raw = reply_interactive(mid, card, reply_in_thread=reply_in_thread)
     if not ok:
         log("deliver_followup reply API failed", state.get("task_id"), mid, redact(json.dumps(raw)[:300]))
@@ -830,6 +831,8 @@ def _footer_for(state: dict, heartbeat: bool = False) -> str:
     status = state.get("status")
     if state.get("stop_requested") and not is_terminal(status):
         base = "已收到停止请求，等待确认"
+    elif state.get("pending_approvals") and not is_terminal(status):
+        base = "等待权限审批 · 请处理权限卡或在 Grok App 审批"
     elif status == "waiting":
         ahead = int(state.get("queued_count") or 0)
         base = "前面还有 %d 条，排队等待" % ahead if ahead else "排队等待"
@@ -886,6 +889,8 @@ def _maybe_timeout_unlocked(state: dict) -> Optional[str]:
     """
     if is_terminal(state.get("status")):
         return None
+    if state.get("pending_approvals"):
+        return None  # Observed native pending request; human wait is not a stall.
     now = time.time()
     created = float(state.get("created_at") or now)
     last_stage = float(state.get("last_stage_at") or state.get("started_at") or created)
@@ -1071,6 +1076,7 @@ def create_ack(
     task_id: Optional[str] = None,
     event_id: Optional[str] = None,
     sender_open_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
     queued_count: int = 0,
     bypass_fifo: bool = False,
     initial_status: str = "ack",
@@ -1100,6 +1106,7 @@ def create_ack(
         "event_id": event_id,
         "chat_id": chat_id,
         "chat_type": chat_type,
+        "thread_id": thread_id,
         "sender_open_id": sender_open_id,
         "request_text": request_text,
         "status": status0,
@@ -1148,7 +1155,7 @@ def create_ack(
                 log("create_ack refused: task already terminal", tid, existing.get("status"))
                 return existing
 
-            reply_in_thread = (chat_type or "").lower() in ("group", "topic")
+            reply_in_thread = (chat_type or "").lower() == "topic" or bool(thread_id)
             ok, pmid, raw = reply_interactive(
                 message_id, card,
                 reply_in_thread=reply_in_thread,

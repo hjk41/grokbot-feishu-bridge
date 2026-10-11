@@ -66,3 +66,14 @@ Check both the public `/grokbridge/health` and unauthenticated task response
 (401) from the cloud worker. Stop the old listener before starting the Mac
 relay, following [cutover](../nas-inbound/CUTOVER.md). A working tunnel does
 not itself prove message ingress or task execution.
+
+Also enable server-side liveness checks for the dedicated tunnel account.
+Client-side ServerAlive alone cannot release a server listener held by an
+unreachable old client. Append a `Match User <tunnel-user>` block at the end
+of the server's sshd configuration with `ClientAliveInterval 15` and
+`ClientAliveCountMax 3`; preserve other accounts' configuration, validate
+with `sshd -t` and effective `sshd -T -C user=...`, then reload SSH.
+For `remote port forwarding failed` plus a timed-out upstream, inspect
+the exact loopback listener and owning SSH account/process first. Terminate
+only the verified stale tunnel connection; do not kill processes by port
+without checking ownership. launchd will establish a fresh connection.

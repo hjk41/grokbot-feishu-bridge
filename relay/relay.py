@@ -755,6 +755,8 @@ def queue_scan_loop():
 
 
 if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "ingest-history":
+    if RELAY_ROLE == "cloud-worker":
+        raise SystemExit("History ingestion belongs to the inbound host")
     settings.validate_startup()
     settings.acquire_instance(DIR)
     load_seen()

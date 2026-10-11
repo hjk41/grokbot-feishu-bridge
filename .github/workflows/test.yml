@@ -20,4 +20,4 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python -m unittest discover -s relay/tests -v
       - run: python scripts/audit_public_tree.py --git-history
-      - run: bash -n scripts/run.sh scripts/progress.sh
+      - run: bash -n scripts/*.sh nas-inbound/*.sh

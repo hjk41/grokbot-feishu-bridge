@@ -4,9 +4,9 @@
 
 | 症状 | 检查 |
 | --- | --- |
-| 没有进度卡 | 云电脑是否醒着；relay 是否运行；CLI ready；权限/版本发布；白名单与群 @ID |
+| 没有进度卡 | 入口主机是否在线；relay 是否运行；CLI ready；权限/版本发布；白名单与群 @ID |
 | 有卡但不执行 | Webhook URL/key、routine 是否暂停、投递状态、同聊天前方任务 |
-| 一直蓝卡 | routine 是否调用了辅助命令；是否进入实际执行；阶段是否更新 |
+| 一直蓝卡 | routine 是否调用正确 helper；独立入口 HTTPS 回调是否可达；start 抢占是否成功；阶段是否更新 |
 | 完成后卡还变化 | 是否启动了第二套心跳或另一个 relay；锁目录是否共享 |
 | 重复卡或重复执行 | 是否手动重放了旧 pending；多个副本是否使用不同状态目录 |
 | 停止按钮无效果 | operator/聊天白名单、是否原发起人、card 事件权限；执行器是否检查 stop_requested |
@@ -35,7 +35,7 @@ bash scripts/run.sh ingest-history om_replace_with_real_message_id --chat-type g
 
 ## 投递与超时
 
-HTTP 超时可能发生在远端接受之后，自动网络重试可能产生多个 routine run。routine 应核对任务状态与终态，不重复执行已结束工作；同时启动的执行器仍可能竞争，当前没有独立的分布式 worker 租约。
+HTTP 超时可能发生在远端接受之后，自动网络重试可能产生多个 routine run。独立入口的执行者须用独立 payload 文件调用 start，已被其他 worker 抢占时返回 409，禁止继续执行。full 模式仍依赖本地状态检查。两种模式都不保证崩溃后的副作用 exactly-once。
 
 派发声明落盘后、POST 前退出可能留下没有真正投递的任务。当前偏好避免盲目重复：先核对 routine 历史、pending 和任务状态，由操作者决定新建请求还是人工修复。不要直接删除队列文件让任务重跑。
 

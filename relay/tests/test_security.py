@@ -92,22 +92,21 @@ class IngressTests(unittest.TestCase):
             progress._default_runner(["lark-cli", "im", "+messages-reply"])
             self.assertEqual(run.call_args.args[0][-2:], ["--as", "bot"])
 
-    def test_reply_card_file_is_relative_to_cli_cwd(self):
+    def test_reply_content_is_literal_json_without_temporary_files(self):
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.object(progress, "DIR", tmp), \
                 mock.patch.object(progress, "TASKS_DIR", os.path.join(tmp, "tasks")):
             calls = []
             def runner(argv, stdin_text=None):
                 calls.append(argv)
-                ref = argv[argv.index("--content") + 1][1:]
-                self.assertFalse(os.path.isabs(ref))
-                self.assertTrue((Path(tmp) / ref).is_file())
+                content = argv[argv.index("--content") + 1]
+                self.assertEqual(json.loads(content), {"schema": "2.0"})
                 return 0, '{"ok":true,"data":{"message_id":"om_example"}}', ""
             with mock.patch.object(progress, "_runner", runner):
                 ok, mid, raw = progress.reply_interactive("om_original", {"schema": "2.0"})
             self.assertTrue(ok)
             self.assertEqual(len(calls), 1)
-            self.assertEqual(list((Path(tmp) / "tasks").iterdir()), [])
+            self.assertFalse((Path(tmp) / "tasks").exists())
 
     def test_stop_callback_is_bound_to_card_chat_and_task(self):
         event = {"event_id": "evt_stop_example", "operator_id": "ou_owner",

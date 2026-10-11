@@ -611,16 +611,6 @@ def _api_code(raw: dict) -> Optional[int]:
     return None
 
 
-def _write_card_tmp(prefix: str, card: dict) -> str:
-    os.makedirs(TASKS_DIR, exist_ok=True)
-    # Keep under tasks/ with unique name
-    tmp = os.path.join(TASKS_DIR, ".%s-%d-%d-%s.json" % (
-        prefix, os.getpid(), threading.get_ident(), uuid.uuid4().hex[:8]))
-    with open(tmp, "w") as f:
-        json.dump(card, f, ensure_ascii=False)
-    return tmp
-
-
 def reply_interactive(
     message_id: str,
     card: dict,
@@ -628,32 +618,27 @@ def reply_interactive(
     reply_in_thread: bool = False,
     idempotency_key: Optional[str] = None,
 ) -> Tuple[bool, Optional[str], dict]:
-    tmp = _write_card_tmp("card", card)
-    try:
-        argv = [
-            FEISHU, "im", "+messages-reply",
-            "--message-id", message_id,
-            "--msg-type", "interactive",
-            "--content", "@" + os.path.relpath(tmp, DIR),
-        ]
-        if reply_in_thread:
-            argv.append("--reply-in-thread")
-        if idempotency_key:
-            argv.extend(["--idempotency-key", idempotency_key[:50]])
-        rc, out, err = _runner(argv, None)
-        raw = _parse_json_out(out) if out else ({"stderr": redact(err)} if err else {})
-        mid = _extract_message_id(raw)
-        ok = rc == 0 and mid is not None
-        if not ok:
-            log("reply_interactive fail", message_id, "rc=%d" % rc, redact(out + " " + err))
-        else:
-            log("reply_interactive ok", message_id, "->", mid)
-        return bool(ok), mid, raw
-    finally:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
+    # --content is a JSON value, not an @file argument (CLI 1.0.96).
+    # subprocess receives a single literal argument, without shell interpolation.
+    argv = [
+        FEISHU, "im", "+messages-reply",
+        "--message-id", message_id,
+        "--msg-type", "interactive",
+        "--content", json.dumps(card, ensure_ascii=False),
+    ]
+    if reply_in_thread:
+        argv.append("--reply-in-thread")
+    if idempotency_key:
+        argv.extend(["--idempotency-key", idempotency_key[:50]])
+    rc, out, err = _runner(argv, None)
+    raw = _parse_json_out(out) if out else ({"stderr": redact(err)} if err else {})
+    mid = _extract_message_id(raw)
+    ok = rc == 0 and mid is not None
+    if not ok:
+        log("reply_interactive fail", message_id, "rc=%d" % rc, redact(out + " " + err))
+    else:
+        log("reply_interactive ok", message_id, "->", mid)
+    return bool(ok), mid, raw
 
 
 def patch_interactive(
@@ -702,26 +687,19 @@ def patch_interactive(
 
 
 def send_interactive(chat_id: str, card: dict) -> Tuple[bool, Optional[str], dict]:
-    tmp = _write_card_tmp("send", card)
-    try:
-        argv = [
-            FEISHU, "im", "+messages-send",
-            "--chat-id", chat_id,
-            "--msg-type", "interactive",
-            "--content", "@" + os.path.relpath(tmp, DIR),
-        ]
-        rc, out, err = _runner(argv, None)
-        raw = _parse_json_out(out) if out else {}
-        mid = _extract_message_id(raw)
-        ok = rc == 0 and mid is not None
-        if not ok:
-            log("send_interactive fail", chat_id, redact(out + " " + err))
-        return ok, mid, raw
-    finally:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
+    argv = [
+        FEISHU, "im", "+messages-send",
+        "--chat-id", chat_id,
+        "--msg-type", "interactive",
+        "--content", json.dumps(card, ensure_ascii=False),
+    ]
+    rc, out, err = _runner(argv, None)
+    raw = _parse_json_out(out) if out else {}
+    mid = _extract_message_id(raw)
+    ok = rc == 0 and mid is not None
+    if not ok:
+        log("send_interactive fail", chat_id, redact(out + " " + err))
+    return ok, mid, raw
 
 
 def deliver_followup(state: dict, card: dict) -> Tuple[bool, Optional[str], dict]:

@@ -8,6 +8,7 @@
 - Add macOS launchd installation, Linux user-service generation and dedicated CLI profile support.
 - Reject invalid roles; cloud-worker launches no local queue or event listeners.
 - Add transport/authentication/FIFO and role regression coverage.
+- Pass card content as literal JSON for CLI 1.0.96 compatibility; remove unsupported @file content references.
 
 Still experimental: host availability, callback reachability and routine behavior require real acceptance tests;
 hard cancellation and exactly-once execution are not provided.

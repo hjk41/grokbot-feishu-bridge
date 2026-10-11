@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
@@ -43,8 +44,21 @@ def call(payload, command, fields=None, *, allow_http=False):
     request = urllib.request.Request(url, body, {'Authorization': 'Bearer ' + token,
                                                 'Content-Type': 'application/json'},
                                      method='GET' if command == 'show' else 'POST')
-    with urllib.request.build_opener(NoRedirect()).open(request, timeout=30) as response:
-        data = json.loads(response.read(131072))
+    opener = urllib.request.build_opener(NoRedirect())
+    for attempt in range(4):
+        try:
+            with opener.open(request, timeout=30) as response:
+                data = json.loads(response.read(131072))
+            break
+        except urllib.error.HTTPError as exc:
+            # Same request/worker identity makes retries safe after a lost reply.
+            # Authentication and ownership rejections must fail immediately.
+            if exc.code not in (408, 429, 500, 502, 503, 504) or attempt == 3:
+                raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            if attempt == 3:
+                raise
+        time.sleep(2 ** attempt)
     if data.get('ok') is not True:
         raise ValueError('callback rejected')
     return data['task']

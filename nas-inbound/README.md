@@ -16,9 +16,8 @@ enable it only after completing [cutover](CUTOVER.md). For manual operation
 run `bash nas-inbound/run.sh`.
 
 Keep task state on durable local storage. Expose only the loopback callback
-server through HTTPS. For example, with [Tailscale Funnel](https://tailscale.com/docs/features/tailscale-funnel),
-use `tailscale funnel --bg --https=8443 http://127.0.0.1:8765` and set the returned
-HTTPS base URL in `.env`. Do not overwrite existing Serve/Funnel mappings.
+server through HTTPS. See the [VPS reverse proxy and outbound SSH tunnel](../docs/reverse-proxy.md)
+deployment; set its public HTTPS base URL in `.env`. Preserve existing proxy routes.
 The public endpoint supports task-scoped bearer authentication; `/health`
 contains no account or task data. `healthcheck.sh` does not prove user ingress.
 

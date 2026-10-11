@@ -11,6 +11,7 @@
 - Pass card content as literal JSON for CLI 1.0.96 compatibility; remove unsupported @file content references.
 - Retry launchd bootstrap briefly after replacing an existing service registration.
 - Retry transient callback/network failures with the same worker identity; authentication and ownership conflicts fail immediately.
+- Identify the callback client with a project User-Agent to avoid default urllib signatures being rejected by browser integrity checks.
 
 Still experimental: host availability, callback reachability and routine behavior require real acceptance tests;
 hard cancellation and exactly-once execution are not provided.

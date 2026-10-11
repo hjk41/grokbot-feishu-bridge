@@ -42,7 +42,8 @@ def call(payload, command, fields=None, *, allow_http=False):
             raise ValueError('start this run before updating')
         body = json.dumps({'command': command, 'worker_id': worker, **(fields or {})}, ensure_ascii=False).encode()
     request = urllib.request.Request(url, body, {'Authorization': 'Bearer ' + token,
-                                                'Content-Type': 'application/json'},
+                                                'Content-Type': 'application/json',
+                                                'User-Agent': 'grokbot-feishu-bridge/0.1 (+https://github.com/hjk41/grokbot-feishu-bridge)'},
                                      method='GET' if command == 'show' else 'POST')
     opener = urllib.request.build_opener(NoRedirect())
     for attempt in range(4):

@@ -31,6 +31,7 @@ class WorkerRetryTests(unittest.TestCase):
         second = opener.open.call_args_list[1].args[0]
         self.assertIs(first, second)
         self.assertEqual(json.loads(first.data)['worker_id'], self.payload['worker_id'])
+        self.assertTrue(first.get_header('User-agent').startswith('grokbot-feishu-bridge/'))
         sleep.assert_called_once_with(1)
 
     def test_network_failure_recovers(self):
@@ -42,7 +43,7 @@ class WorkerRetryTests(unittest.TestCase):
         self.assertEqual(opener.open.call_count, 2)
 
     def test_auth_and_claim_conflicts_are_not_retried(self):
-        for status in (401, 409):
+        for status in (401, 403, 409):
             with self.subTest(status=status):
                 opener = mock.Mock()
                 opener.open.side_effect = HTTPError('https://bridge.example', status, 'rejected', {}, None)

@@ -9,7 +9,8 @@ HTTPS `BRIDGE_PUBLIC_URL`. Keep it mode 600. Python 3.10+ and an authenticated
 Lark CLI are required on the inbound host. A dedicated `FEISHU_PROFILE` leaves
 other app profiles intact.
 
-On macOS use `scripts/install-launchd.sh`. On Linux `install.sh` generates a
+On macOS use `scripts/install-launchd.sh --prepare-only` to prepare the plist
+without starting listeners, then run it without the flag after cutover. On Linux `install.sh` generates a
 user service in `runtime/`; install it into your user systemd directory, then
 enable it only after completing [cutover](CUTOVER.md). For manual operation
 run `bash nas-inbound/run.sh`.

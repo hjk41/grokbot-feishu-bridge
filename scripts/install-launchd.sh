@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Install for the current logged-in macOS user. Configuration stays in .env.
 set -euo pipefail
+if [[ $# -gt 1 || ( $# -eq 1 && "$1" != --prepare-only ) ]]; then
+  echo 'Usage: install-launchd.sh [--prepare-only]' >&2
+  exit 2
+fi
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 label=com.grokbot.feishu-bridge
 plist="$HOME/Library/LaunchAgents/$label.plist"
@@ -21,6 +25,10 @@ with open(path, 'wb') as out:
     plistlib.dump(data, out)
 os.chmod(path, 0o600)
 PY
+if [[ "${1:-}" == --prepare-only ]]; then
+  echo "Prepared $label; service has not been started."
+  exit 0
+fi
 launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$plist"
 launchctl kickstart "gui/$(id -u)/$label"
